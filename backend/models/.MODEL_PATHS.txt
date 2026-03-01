@@ -2,15 +2,14 @@
 # Place all model weights in this folder
 
 # Car crash detection
-mobilenetv2_lstm_finetuned.pt  # Used by crash detector
+# NOTE: crash model lives in backend/ai/crash_detector/mobilenetv2_lstm_finetuned.pt
 
 # Violence detection
-mobilenet_clip_best_ts.pt      # Used by violence detector
+violence_detector_v6_ts.pt      # TorchScript V6 runtime
+violence_detector_v6_config.json
 
 # People counter
 yolov8n.pt                     # Used by people counter
 
-# (Other models)
-mobilenet_clip_best.pth
-x3d_s_best.pth
-x3d_s_best_ts.pt
+# Legacy models removed from active use:
+# mobilenet_clip_best*.pth/.pt, x3d_s_best*.pth/.pt

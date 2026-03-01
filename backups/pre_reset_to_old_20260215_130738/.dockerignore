@@ -1,0 +1,49 @@
+# Version control
+.git
+.gitignore
+.gitattributes
+
+# Development
+.venv
+venv
+env
+__pycache__
+.pytest_cache
+.coverage
+*.pyc
+
+# Node
+node_modules
+npm-debug.log
+yarn-error.log
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+*.iml
+.DS_Store
+
+# Frontend build
+frontend/dist
+frontend/.next
+
+# Documentation
+docs
+*.md
+README.md
+
+# Testing
+.pytest_cache
+htmlcov
+.tox
+
+# System
+.env.local
+.env.*.local
+.cache
+
+# Old folders (if any exist)
+MODELS
+Videos

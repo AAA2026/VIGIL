@@ -1,0 +1,10 @@
+{
+  "id": "RPT-2026-03-01-153350-90902a99",
+  "name": "QA Report",
+  "type": "incidents",
+  "format": "JSON",
+  "generated_date": "2026-03-01T15:33:50.716497",
+  "data": {
+    "a": 1
+  }
+}

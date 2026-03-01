@@ -1,0 +1,10 @@
+{
+  "id": "RPT-2026-02-12-234132-3f399e53",
+  "name": "Test Report",
+  "type": "incidents",
+  "format": "JSON",
+  "generated_date": "2026-02-12T23:41:32.275764",
+  "data": {
+    "hello": "world"
+  }
+}

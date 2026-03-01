@@ -1,0 +1,19 @@
+{
+  "python": "3.10.9",
+  "platform": "win32",
+  "torch_version": "2.5.1+cu121",
+  "torch_cuda_available": true,
+  "torch_cuda_version": "12.1",
+  "cpu_logical_cores": 12,
+  "cpu_physical_cores": 6,
+  "ram_gb": 15.92,
+  "torch_visible_gpus": [
+    {
+      "index": 0,
+      "name": "NVIDIA GeForce RTX 2060",
+      "vram_gb": 6.0,
+      "capability": "7.5"
+    }
+  ],
+  "nvidia_smi": "NVIDIA GeForce RTX 2060, 6144 MiB, 591.86"
+}

@@ -7,7 +7,7 @@
 2. Change directory to the React app:
 
 	```powershell
-	cd "S:\GRAD PROJECT\VIGIL\Vigil Surveillance App Design - Figma"
+	cd "S:\GRAD PROJECT\VIGIL\frontend"
 	npm install  # Only needed once if dependencies change
 	```
 
@@ -71,7 +71,7 @@
 ## Quick Reference
 
 - **Frontend:**
-  - `cd "Vigil Surveillance App Design - Figma"`
+  - `cd "frontend"`
   - `npm run dev`
 
 - **Backend:**

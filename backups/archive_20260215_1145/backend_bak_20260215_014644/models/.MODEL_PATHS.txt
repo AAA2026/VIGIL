@@ -1,0 +1,5 @@
+# Model file mapping for VIGIL backend
+# Place all model weights in this folder
+
+# Model binaries removed during cleanup
+# If you need to restore any model weights, re-add them to this folder or update paths in `backend/config.py`.

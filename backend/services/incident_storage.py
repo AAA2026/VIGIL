@@ -1,23 +1,19 @@
 """
-Incident Storage Service
+Incident Storage Service (PostgreSQL/SQLAlchemy)
 
-Stores detected incidents (violence/crash) with video clips for frontend viewing.
-Maintains a history of detections that can be queried via API.
+Persists detected incidents and exposes helper CRUD functions used by the
+Flask routes and simulator. Falls back to SQLite for local dev/tests if
+DATABASE_URL is not set.
 """
 
 import time
-import threading
-import shutil
-import os
+import uuid
 from typing import List, Dict, Optional
-from pathlib import Path
 
-# In-memory incident storage (thread-safe)
-_incidents: List[Dict] = []
-_incident_id_counter = 1
-_lock = threading.Lock()
-_max_incidents = 200  # Keep last 200 incidents
-_update_window_seconds = 40  # merge duplicate events per camera/type within this window
+from sqlalchemy import select, func, update, delete
+from sqlalchemy.exc import IntegrityError
+
+from backend.db import Incident, get_session
 
 # Simple registry of security personnel for dispatch (demo-only)
 _security_roster = [
@@ -28,365 +24,219 @@ _security_roster = [
     {"id": "SEC-105", "name": "Officer Smith", "status": "available"},
 ]
 
+_update_window_seconds = 40  # merge duplicate events per camera/type within this window
+_max_insert_retries = 5
 
-def add_incident(camera_id: str, event_type: str, confidence: float, video_path: str, model: str, extra: dict = None) -> Dict:
-    """
-    Store a new incident detection.
-    
-    Args:
-        camera_id: Camera identifier (e.g., "CAM-01")
-        event_type: Type of incident ("violence" or "traffic")
-        confidence: Detection confidence (0.0 - 1.0)
-        video_path: Relative path to video file
-        model: Model name used for detection
-    
-    Returns:
-        Created incident dict
-    """
-    global _incident_id_counter
-    
-    # Normalize event_type for crash
-    if event_type == "traffic":
-        event_type = "crash"
-    # Determine severity based on confidence
-    severity = (
+
+def _severity(confidence: float) -> str:
+    return (
         "critical" if confidence > 0.9 else
         "high" if confidence > 0.75 else
         "medium" if confidence > 0.6 else
         "low"
     )
-    
-    now_ts = time.time()
-
-    with _lock:
-        # Check for recent incident for same camera/type to reduce spam
-        for existing in _incidents:
-            # Condition 1: Same video file (Strict Dedup for Simulator)
-            # If it's the exact same video file, we assume it's the same event, regardless of time.
-            same_video = existing.get("video_url") == video_path or existing.get("videoUrl") == video_path
-            
-            # Condition 2: Same camera/type within time window (Standard Dedup)
-            in_time_window = (now_ts - existing.get("timestamp", 0) <= _update_window_seconds)
-            
-            if (existing.get("cameraId") == camera_id and existing.get("type") == event_type and (same_video or in_time_window)):
-                update_data = {
-                    "timestamp": now_ts,
-                    "timestamp_human": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now_ts)),
-                    "confidence": round(confidence * 100, 1),
-                    "severity": severity,
-                    "description": _get_description(event_type, confidence),
-                    "video_url": video_path,
-                    "videoUrl": video_path,
-                    # Keep existing status so we don't "revive" a resolved/acked incident
-                    "status": existing.get("status", "active"),
-                    "model": model,
-                }
-                if extra:
-                     update_data.update(extra)
-                existing.update(update_data)
-                print(f"📝 Updated incident (merged): {existing['id']} - {event_type} (Status: {existing.get('status')})")
-                
-                # Emit update for merged incident so frontend sees confidence/severity changes
-                try:
-                    from backend.app import emit_incident_update
-                    emit_incident_update(existing)
-                except Exception as e:
-                    print(f"[WARN] Could not emit merged incident update: {e}")
-                    
-                return existing
-
-        # Create incident record
-        incident = {
-            "id": f"INC-{int(now_ts)}-{camera_id}",
-            "incident_number": _incident_id_counter,
-            "type": event_type,  # "violence", "traffic", or "people_count"
-            "severity": severity,
-            "location": f"Camera {camera_id}",  # TODO: Map camera to real location
-            "cameraId": camera_id,
-            "timestamp": now_ts,
-            "timestamp_human": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now_ts)),
-            "status": "active",  # active | acknowledged | dispatched | resolved
-            "acknowledged": False,
-            "ack_by": None,
-            "dispatched_to": [],  # list of security IDs
-            "assigned_security": None,  # primary dispatch
-            "description": _get_description(event_type, confidence),
-            "confidence": round(confidence * 100, 1),  # percentage
-            "video_url": video_path,  # relative path (snake_case)
-            "videoUrl": video_path,   # legacy camelCase for older UI paths
-            "model": model,
-        }
-        if extra:
-            incident.update(extra)
-        
-        _incidents.insert(0, incident)  # Add to front (newest first)
-        _incident_id_counter += 1
-        
-        # Keep only last N incidents to prevent memory bloat
-        if len(_incidents) > _max_incidents:
-            _incidents.pop()
-    
-    print(f"📝 Stored incident: {incident['id']} - {event_type} @ {confidence:.2f}")
-    # Emit websocket notification if available
-    try:
-        from backend.app import emit_incident_update
-        emit_incident_update(incident)
-    except Exception as e:
-        print(f"[WARN] Could not emit incident update: {e}")
-    return incident
-
-
-def get_incidents(limit: int = 50, event_type: Optional[str] = None, status: Optional[str] = None) -> List[Dict]:
-    """
-    Retrieve stored incidents with optional filtering.
-    
-    Args:
-        limit: Max number of incidents to return
-        event_type: Filter by type ("violence" or "traffic"), None for all
-        status: Filter by status ("active" or "resolved"), None for all
-    
-    Returns:
-        List of incident dicts (newest first)
-    """
-    with _lock:
-        filtered = _incidents
-        
-        if event_type:
-            filtered = [inc for inc in filtered if inc["type"] == event_type]
-        
-        if status:
-            filtered = [inc for inc in filtered if inc["status"] == status]
-        
-        return filtered[:limit]
-
-
-def get_incident_by_id(incident_id: str) -> Optional[Dict]:
-    """Get a specific incident by ID."""
-    with _lock:
-        for incident in _incidents:
-            if incident["id"] == incident_id:
-                return incident
-    return None
-
-
-def mark_incident_resolved(incident_id: str, resolution_type: str = "resolved") -> bool:
-    """
-    Mark an incident as resolved with a specific resolution type.
-    resolution_type: 'resolved' (True Positive) or 'not_resolved' (False Positive / Unverified)
-    """
-    with _lock:
-        for incident in _incidents:
-            if incident["id"] == incident_id:
-                incident["status"] = "resolved"
-                incident["resolution_type"] = resolution_type
-                
-                # If it was assigned to someone, free them up (conceptually)
-                # In a real DB, we'd update the user's status key.
-                
-                print(f"✅ Incident {incident_id} marked {resolution_type}")
-                return True
-    return False
-
-
-def acknowledge_incident(incident_id: str, user_id: str) -> bool:
-    """Mark an incident as acknowledged by a user."""
-    with _lock:
-        for incident in _incidents:
-            if incident["id"] == incident_id:
-                incident["acknowledged"] = True
-                incident["ack_by"] = user_id
-                if incident["status"] == "active":
-                    incident["status"] = "acknowledged"
-                print(f"🤝 Incident {incident_id} acknowledged by {user_id}")
-                return True
-    return False
-
-
-def ack_all_incidents(user_id: str) -> int:
-    """
-    HARD RESET: Delete all incidents from memory.
-    Originally 'acknowledge all', now repurposed to 'Dismiss All & Reset' per user request.
-    """
-    global _incidents
-    count = 0
-    with _lock:
-        count = len(_incidents)
-        # Clear the list explicitly here or call clear_incidents
-        # Calling clear_incidents() would require releasing lock if it also takes lock,
-        # but clear_incidents has its own lock.
-        # So we should call clear_incidents() OUTSIDE the lock or just inline the clear logic to be safe/atomic.
-        # Let's inline the clearing to match clear_incidents logic but inside this function's scope if needed,
-        # OR just call clear_incidents() since it handles the lock.
-        pass
-    
-    # Safe to call clear_incidents which handles its own lock
-    clear_incidents()
-    
-    if count > 0:
-        print(f"🗑️  Reset all {count} incidents triggered by {user_id}")
-    return count
-
-
-def dispatch_incident(incident_id: str, security_id: str, assigned: bool = True) -> bool:
-    """Dispatch a security officer to an incident."""
-    with _lock:
-        for incident in _incidents:
-            if incident["id"] == incident_id:
-                if security_id not in incident["dispatched_to"]:
-                    incident["dispatched_to"].append(security_id)
-                if assigned:
-                    incident["assigned_security"] = security_id
-                incident["status"] = "dispatched"
-                print(f"🚓 Incident {incident_id} dispatched to {security_id}")
-                return True
-    return False
-
-
-def list_security_roster() -> List[Dict]:
-    """
-    Return security roster with dynamic status based on active assignments.
-    """
-    # Create a copy of the roster to avoid mutating the original template if we were caching it
-    roster_snapshot = [officer.copy() for officer in _security_roster]
-    
-    with _lock:
-        # Find all currently assigned security IDs
-        busy_officers = set()
-        for inc in _incidents:
-            if inc["status"] in ["dispatched", "acknowledged"] and inc.get("assigned_security"):
-                 busy_officers.add(inc["assigned_security"])
-    
-    for officer in roster_snapshot:
-        if officer["id"] in busy_officers:
-            officer["status"] = "Busy"
-        else:
-            officer["status"] = "Available"
-            
-    return roster_snapshot
-
-
-def clear_incidents():
-    """Clear all stored incidents (for testing/reset)."""
-    global _incident_id_counter
-    with _lock:
-        _incidents.clear()
-        _incident_id_counter = 1
-    print("🗑️  Cleared all incidents")
 
 
 def _get_description(event_type: str, confidence: float) -> str:
-    """Generate human-readable description for incident."""
     if event_type == "violence":
-        if confidence > 0.9:
-            return "High-confidence violent activity detected"
-        elif confidence > 0.75:
-            return "Physical altercation detected"
-        elif confidence > 0.6:
-            return "Aggressive behavior detected"
+        return "Possible violence detected"
+    if event_type == "crash":
+        return "Possible vehicle crash detected"
+    return f"Detected {event_type} @ {round(confidence*100,1)}%"
+
+
+def _new_incident_id() -> str:
+    return f"INC-{uuid.uuid4().hex[:14].upper()}"
+
+
+def _next_incident_number(session) -> int:
+    current = session.scalar(select(func.max(Incident.incident_number))) or 0
+    return int(current) + 1
+
+
+def add_incident(camera_id: str, event_type: str, confidence: float, video_path: str, model: str, extra: dict = None) -> Dict:
+    """Create or merge an incident and persist to DB."""
+    if event_type == "traffic":
+        event_type = "crash"
+
+    now_ts = time.time()
+    severity = _severity(confidence)
+
+    Session = get_session()
+    with Session() as session:
+        session.expire_on_commit = False
+
+        # Dedup: same camera/type within time window OR same video file
+        stmt = (
+            select(Incident)
+            .where(Incident.camera_id == camera_id)
+            .where(Incident.type == event_type)
+            .where(
+                (Incident.video_url == video_path)
+                | (Incident.timestamp >= now_ts - _update_window_seconds)
+            )
+            .order_by(Incident.timestamp.desc())
+        )
+        existing = session.scalars(stmt).first()
+
+        if existing:
+            existing.timestamp = now_ts
+            existing.confidence = round(confidence * 100, 1)
+            existing.severity = severity
+            existing.description = _get_description(event_type, confidence)
+            existing.video_url = video_path
+            existing.model = model
+            if extra:
+                existing.extra = {**(existing.extra or {}), **extra}
+            session.commit()
+            incident = existing
         else:
-            return "Suspicious activity detected"
-    elif event_type == "crash":
-        if confidence > 0.9:
-            return "Severe vehicle collision detected"
-        elif confidence > 0.75:
-            return "Vehicle collision detected"
-        elif confidence > 0.6:
-            return "Traffic accident detected"
-        else:
-            return "Possible traffic incident"
-    else:
-        return "Incident detected"
+            incident = None
+            for _ in range(_max_insert_retries):
+                incident = Incident(
+                    id=_new_incident_id(),
+                    incident_number=_next_incident_number(session),
+                    type=event_type,
+                    severity=severity,
+                    location=f"Camera {camera_id}",
+                    camera_id=camera_id,
+                    timestamp=now_ts,
+                    status="active",
+                    acknowledged=0,
+                    ack_by=None,
+                    dispatched_to="",
+                    assigned_security=None,
+                    description=_get_description(event_type, confidence),
+                    confidence=round(confidence * 100, 1),
+                    video_url=video_path,
+                    model=model,
+                    extra=extra or {},
+                )
+                session.add(incident)
+                try:
+                    session.commit()
+                    break
+                except IntegrityError:
+                    # Handle rare race on unique incident_number with a retry.
+                    session.rollback()
+                    incident = None
+
+            if incident is None:
+                raise RuntimeError("Failed to insert incident after retrying")
+
+        session.refresh(incident)
+        payload = incident.to_dict()
+
+    # Emit websocket notification if available
+    try:
+        from backend.app import emit_incident_update
+        emit_incident_update(payload)
+    except Exception:
+        pass
+    return payload
 
 
-def get_incident_stats() -> Dict:
-    """Get summary statistics for stored incidents."""
-    with _lock:
-        total = len(_incidents)
-        violence = sum(1 for inc in _incidents if inc["type"] == "violence")
-        traffic = sum(1 for inc in _incidents if inc["type"] == "traffic")
-        active = sum(1 for inc in _incidents if inc["status"] == "active")
-        resolved = sum(1 for inc in _incidents if inc["status"] == "resolved")
-        
-        return {
-            "total": total,
-            "violence": violence,
-            "traffic": traffic,
-            "active": active,
-            "resolved": resolved,
-        }
+def get_incidents(limit: int = 50, event_type: Optional[str] = None, status: Optional[str] = None) -> List[Dict]:
+    Session = get_session()
+    with Session() as session:
+        stmt = select(Incident).order_by(Incident.timestamp.desc()).limit(limit)
+        if event_type:
+            stmt = stmt.where(Incident.type == event_type)
+        if status:
+            stmt = stmt.where(Incident.status == status)
+        return [row.to_dict() for row in session.scalars(stmt).all()]
 
 
-def save_incident_feedback(incident_id: str, feedback_type: str) -> bool:
-    """
-    Process user feedback (confirm/reject) and save data for retraining.
-    """
-    with _lock:
-        incident = None
-        for inc in _incidents:
-            if inc["id"] == incident_id:
-                incident = inc
-                break
-        
-        if not incident:
+def get_incident_by_id(incident_id: str) -> Optional[Dict]:
+    Session = get_session()
+    with Session() as session:
+        obj = session.get(Incident, incident_id)
+        return obj.to_dict() if obj else None
+
+
+def mark_incident_resolved(incident_id: str, resolution_type: str = "resolved") -> bool:
+    Session = get_session()
+    with Session() as session:
+        obj = session.get(Incident, incident_id)
+        if not obj:
             return False
-            
-        # Update status
-        incident["aiFeedback"] = True
-        incident["feedbackType"] = feedback_type
-        
-        if feedback_type == "reject":
-            incident["status"] = "resolved"
-            incident["resolution_type"] = "false_positive"
-            print(f"❌ Incident {incident_id} rejected (False Alarm)")
-        elif feedback_type == "confirm":
-             incident["status"] = "confirmed"
-             print(f"✅ Incident {incident_id} confirmed (True Positive)")
-
-        # Save for retraining
-        try:
-            _copy_for_retraining(incident, feedback_type)
-        except Exception as e:
-            print(f"[RETRAIN ERROR] Failed to save data: {e}")
-            
+        extra = obj.extra or {}
+        extra["resolution_type"] = resolution_type
+        obj.extra = extra
+        obj.status = "resolved"
+        session.commit()
         return True
 
 
-def _copy_for_retraining(incident: Dict, feedback_type: str):
-    """Copy video clip to retraining dataset."""
-    try:
-        video_path = incident.get("video_url") # relative path e.g. "Videos/..."
-        if not video_path:
-            return
-    
-        # Determine Source - handle potential path variations
-        # Assuming current working directory is project root
-        project_root = Path.cwd()
-        source_path = (project_root / video_path).resolve()
-            
-        if not source_path.exists():
-            # Try plain "Videos" prefix if path was stored without it or differently
-            if "Videos" not in str(video_path):
-                 source_path = (project_root / "Videos" / video_path).resolve()
-        
-        if not source_path.exists():
-            print(f"[RETRAIN INFO] Video source not found: {source_path}")
-            return
-    
-        # Determine Dest
-        # backend/data/retraining/false_positives OR true_positives
-        category = "false_positives" if feedback_type == "reject" else "true_positives"
-        dest_dir = project_root / "backend" / "data" / "retraining" / category
-        dest_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Filename: [label]_[timestamp]_[orig_name]
-        label = incident.get("type", "unknown")
-        timestamp = int(incident.get("timestamp", 0))
-        dest_filename = f"{label}_{timestamp}_{source_path.name}"
-        dest_path = dest_dir / dest_filename
-        
-        shutil.copy2(source_path, dest_path)
-        print(f"💾 Saved for retraining: {dest_path}")
-    except Exception as e:
-        print(f"[RETRAIN INTERNAL ERROR] {e}")
+def acknowledge_incident(incident_id: str, user_id: str) -> bool:
+    Session = get_session()
+    with Session() as session:
+        updated = session.execute(
+            update(Incident)
+            .where(Incident.id == incident_id)
+            .values(acknowledged=1, ack_by=user_id, status="acknowledged")
+        )
+        session.commit()
+        return updated.rowcount > 0
 
 
+def ack_all_incidents(user_id: str) -> int:
+    Session = get_session()
+    with Session() as session:
+        updated = session.execute(
+            update(Incident)
+            .where(Incident.status != "resolved")
+            .values(acknowledged=1, ack_by=user_id, status="acknowledged")
+        )
+        session.commit()
+        return updated.rowcount
+
+
+def dispatch_incident(incident_id: str, security_id: str) -> bool:
+    Session = get_session()
+    with Session() as session:
+        obj = session.get(Incident, incident_id)
+        if not obj:
+            return False
+        dispatched = (obj.dispatched_to or "").split(",") if obj.dispatched_to else []
+        if security_id not in dispatched:
+            dispatched.append(security_id)
+        obj.dispatched_to = ",".join(filter(None, dispatched))
+        obj.assigned_security = security_id
+        obj.status = "dispatched"
+        session.commit()
+        return True
+
+
+def list_security_roster():
+    return _security_roster
+
+
+def clear_incidents() -> int:
+    Session = get_session()
+    with Session() as session:
+        deleted = session.execute(delete(Incident))
+        session.commit()
+        return deleted.rowcount
+
+
+def get_incident_stats() -> Dict:
+    Session = get_session()
+    with Session() as session:
+        total = session.scalar(select(func.count(Incident.id))) or 0
+        active = session.scalar(select(func.count(Incident.id)).where(Incident.status == "active")) or 0
+        resolved = session.scalar(select(func.count(Incident.id)).where(Incident.status == "resolved")) or 0
+        return {"total": total, "active": active, "resolved": resolved}
+
+
+def save_incident_feedback(incident_id: str, feedback_type: str) -> bool:
+    Session = get_session()
+    with Session() as session:
+        obj = session.get(Incident, incident_id)
+        if not obj:
+            return False
+        extra = obj.extra or {}
+        extra["feedback"] = feedback_type
+        obj.extra = extra
+        session.commit()
+        return True

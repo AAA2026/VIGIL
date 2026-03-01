@@ -1,0 +1,26 @@
+{
+  "id": "INC-1770823548-CAM-128",
+  "incident_number": 112,
+  "type": "violence",
+  "severity": "high",
+  "location": "Camera CAM-128",
+  "cameraId": "CAM-128",
+  "timestamp": 1770930390.6804125,
+  "timestamp_human": "2026-02-12 23:06:30",
+  "status": "confirmed",
+  "acknowledged": true,
+  "ack_by": "auditor",
+  "dispatched_to": [
+    "SEC-101"
+  ],
+  "assigned_security": "SEC-101",
+  "description": "Possible violence detected (78% confidence)",
+  "confidence": 77.9,
+  "video_url": "violence/HVSv9sgz2ZI_1.mp4",
+  "videoUrl": "violence/HVSv9sgz2ZI_1.mp4",
+  "model": "mobilenet",
+  "aiFeedback": true,
+  "feedbackType": "confirm",
+  "label": "Violence incident detected",
+  "saved_at": "2026-02-12T21:06:59.644202"
+}

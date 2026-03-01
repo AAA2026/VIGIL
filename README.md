@@ -1,111 +1,208 @@
-# VIGIL – AI-Powered Surveillance System
+# VIGIL
 
-VIGIL is a real-time surveillance demonstration platform that uses advanced AI models to detect violence, car crashes, and count people in video feeds. It features a Python/Flask backend that runs AI inference and a modern React/Vite frontend for live monitoring.
+AI-powered surveillance platform for:
+- violence detection
+- crash detection
+- people counting
+- live camera wall + incident operations dashboard
 
----
+Backend is Flask + SQLAlchemy + Alembic. Frontend is React + Vite.
 
-## 🚀 Quick Start (Fresh Install)
-This guide is for setting up the project from scratch (e.g., after cloning from GitHub).
+## Quick Start
 
-### Prerequisites
-*   **Python 3.8+** (Ensure added to PATH)
-*   **Node.js 16+** (Ensure added to PATH)
-*   **PowerShell** (for the unified startup script)
-
-### 1️⃣ Setup & Run (One-Click)
-The easiest way is to run the included **automated script**. It will verify your environment, install all python/node dependencies if missing, and start the system.
-
+### One command (Windows PowerShell)
 ```powershell
 .\start-vigil.ps1
 ```
 
-### 2️⃣ Manual Setup (If Script Fails)
-If you prefer to run things manually:
-
-**Backend:**
-```bash
+### Manual start
+Backend:
+```powershell
 pip install -r requirements.txt
+python -m alembic upgrade head
 python -m backend.app
 ```
 
-**Frontend:**
-```bash
-cd "Vigil Surveillance App Design - Figma"
-npm install  # Run this once to install dependencies
+Frontend:
+```powershell
+cd frontend
+npm install
 npm run dev
 ```
 
-### Access Points
-*   **Backend API**: `http://127.0.0.1:5000`
-*   **Frontend Dashboard**: `http://localhost:3000`
+### Default URLs
+- Backend API: `http://127.0.0.1:5000`
+- Health: `http://127.0.0.1:5000/api/health`
+- Frontend: `http://localhost:3000`
 
-### 🌍 Deployment
-For detailed instructions on deploying to a production environment (including database and server setup), see the **[Deployment Guide](DEPLOYMENT.md)**.
+## Database Setup (Production)
 
----
+- Set `DATABASE_URL`:
+  - `postgresql+psycopg://user:pass@host:5432/vigil`
+- Apply migrations:
+  - `python -m alembic upgrade head`
+- Check revision:
+  - `python -m alembic current`
 
-## 🏗️ Architecture
+Important:
+- `DB_AUTO_CREATE` defaults to `0` in production paths.
+- Schema should be managed by Alembic migrations, not runtime table creation.
+- Full DB guidance: [docs/DB_SETUP.md](docs/DB_SETUP.md)
 
-### AI & Backend (`/backend`)
-*   **Framework**: Flask with Socket.IO for real-time updates.
-*   **Inference Engine** (`backend/ai/inference.py`):
-    *   **Violence Detection**: MobileNet-Clip based model. Integrated with **YOLOv8 People Counting** for crowd analytics.
-    *   **Crash Detection**: MobileNetV2-LSTM hybrid model specialized for vehicle accidents.
-*   **Simulator** (`backend/services/camera_simulator.py`): Simulates live patterns by rotating video clips on a loop.
+## Configuration
 
-### Frontend (`/Vigil Surveillance App Design - Figma`)
-*   **Design**: Modern dark-mode UI with "glassmorphism" aesthetics.
-*   **Features**:
-    *   Live camera grid.
-    *   Real-time incident alerts.
-    *   Interactive dashboard for security personnel.
+Primary runtime configuration lives in [backend/config.py](backend/config.py):
+- camera groups (`VIOLENCE_CAMERAS`, `CRASH_CAMERAS`)
+- thresholds (`VIOLENCE_THRESHOLD`, `ACCIDENT_THRESHOLD`)
+- model paths (`MODEL_PATHS`)
 
----
+DB engine tuning env vars (optional):
+- `DB_POOL_SIZE`
+- `DB_MAX_OVERFLOW`
+- `DB_POOL_TIMEOUT`
+- `DB_POOL_RECYCLE`
+- `DB_ECHO`
 
-## ⚙️ Configuration
+API runtime safety env vars:
+- `CORS_ALLOWED_ORIGINS` (comma-separated; default local dev origins)
+- `DEMO_AUTH_ENABLED` (`1`/`0`, default `1`)
+- `MAX_UPLOAD_MB` (request body limit in MB, default `200`)
 
-You can tune the system's sensitivity in `backend/config.py`:
+## File-by-File Guide (Main Files)
 
-| Setting | Default | Description |
-|---------|---------|-------------|
-| `VIOLENCE_THRESHOLD` | 0.70 | Confidence required to flag violence. High precision mode. |
-| `ACCIDENT_THRESHOLD` | 0.30 | Confidence required to flag crashes. Tuned for demo sensitivity. |
-| `DEFAULT_CAMERAS` | 12 Cams | List of active camera IDs. |
-| `MODEL_PATHS` | - | Paths to `.pt` and `.pth` model weights. |
+This section explains what each important project file actually does in runtime.
 
-Cameras are assigned specific detection roles in `config.py`:
-*   **Violence Cameras** (`CAM-042`, `CAM-128`, etc.): Equipped with the **Violence Model** and **YOLO People Counter**. They process videos from the `violence` and `no_violence` folders.
-*   **Crash Cameras** (`CAM-283`, `CAM-074`, etc.): Equipped with the **Crash Model**. They process videos from the `crash` and `no_crash` folders.
+### Root
 
----
+| File | Purpose |
+|---|---|
+| [start-vigil.ps1](start-vigil.ps1) | Launch script: validates tooling, installs deps if needed, runs migrations, starts backend + frontend. |
+| [requirements.txt](requirements.txt) | Python dependency lock list for backend/runtime. |
+| [alembic.ini](alembic.ini) | Alembic config entrypoint used by migration commands. |
+| [pytest.ini](pytest.ini) | Pytest configuration. |
+| [.env](.env) | Local environment variables (not committed for production secrets). |
+| [README.md](README.md) | Main project documentation. |
 
-## 🛠️ Troubleshooting
+### Backend API and App Wiring
 
-**"Frontend folder not found" error:**
-Ensure the folder `Vigil Surveillance App Design - Figma` exists in the root. The startup script expects this exact name.
+| File | Purpose |
+|---|---|
+| [backend/app.py](backend/app.py) | Main Flask app: routes, health, metrics, auth demo endpoints, incident/report/demo APIs, websocket emits, simulator startup. |
+| [backend/config.py](backend/config.py) | Static runtime configuration: camera groups, thresholds, default cameras, model path map. |
+| [backend/__init__.py](backend/__init__.py) | Package marker for backend module imports. |
 
-**Backend starts but no videos play:**
-Check that the `Videos/` directory contains standard MP4 files. The system expects videos to be organized in subfolders or directly in the root of `Videos/`.
+### Backend Database Layer
 
-**"Module not found" errors:**
-Manually install backend dependencies:
-```bash
-pip install -r requirements.txt
+| File | Purpose |
+|---|---|
+| [backend/db/engine.py](backend/db/engine.py) | Creates SQLAlchemy engine/sessionmaker, handles URL normalization, pooling config, SQLite pragmas. |
+| [backend/db/models.py](backend/db/models.py) | ORM models (currently `Incident`) with indexes/constraints and serializer (`to_dict`). |
+| [backend/db/__init__.py](backend/db/__init__.py) | Exports DB helpers (`get_engine`, `get_sessionmaker`, `get_session`, `Base`, `Incident`). |
+
+### Backend Services
+
+| File | Purpose |
+|---|---|
+| [backend/services/camera_manager.py](backend/services/camera_manager.py) | Thread-safe camera state store + video rotation helpers + offline mode state. |
+| [backend/services/camera_simulator.py](backend/services/camera_simulator.py) | Background simulator loop that rotates videos, calls inference, updates camera states, creates incidents with cooldowns. |
+| [backend/services/incident_storage.py](backend/services/incident_storage.py) | Database CRUD/service layer for incidents (create/merge/list/ack/resolve/dispatch/stats). |
+| [backend/services/incident_service.py](backend/services/incident_service.py) | Additional orchestration path for per-video detection pipelines. |
+| [backend/services/demo_service.py](backend/services/demo_service.py) | Persists and updates demo booking requests in JSON storage. |
+| [backend/services/camera_service.py](backend/services/camera_service.py) | Legacy/simple camera state helper kept for compatibility. |
+
+### Backend AI Layer
+
+| File | Purpose |
+|---|---|
+| [backend/ai/inference.py](backend/ai/inference.py) | Unified AI entrypoint. Routes to violence/crash detectors by camera role and attaches people count where applicable. |
+| [backend/ai/violence_detector/inference.py](backend/ai/violence_detector/inference.py) | V6 TorchScript violence inference (frame extraction, preprocessing, threshold profiles, prediction payload). |
+| [backend/ai/violence_detector/__init__.py](backend/ai/violence_detector/__init__.py) | Violence detector wrapper + fallback behavior if model loading fails. |
+| [backend/ai/people_counter/yolov8.py](backend/ai/people_counter/yolov8.py) | YOLOv8 people counting inference integration. |
+| [backend/ai/people_counter/__init__.py](backend/ai/people_counter/__init__.py) | Exports people counting function. |
+| [backend/ai/crash_detector/__init__.py](backend/ai/crash_detector/__init__.py) | Crash model load + inference entrypoint and output normalization. |
+| [backend/ai/crash_detector/model_architecture.py](backend/ai/crash_detector/model_architecture.py) | Crash model network definition. |
+| [backend/ai/crash_detector/sampling.py](backend/ai/crash_detector/sampling.py) | Video frame sampling utility for crash model. |
+| [backend/ai/crash_detector/transforms_setup.py](backend/ai/crash_detector/transforms_setup.py) | Crash model preprocessing transforms. |
+| [backend/ai/retrainer.py](backend/ai/retrainer.py) | Simulated retraining pipeline endpoint backend (currently demo behavior). |
+
+### Backend Utilities and Assets
+
+| Path | Purpose |
+|---|---|
+| `backend/models/` | Active runtime model files (`violence_detector_v6_ts.pt`, config JSON, `yolov8n.pt`). |
+| `backend/models/deprecated/` | Old model files kept for reference, not used by active inference path. |
+| `backend/models/retrained/` | Output folder for retraining pipeline artifacts. |
+| `backend/data/` | Local JSON and retraining sample media used by demo/retrain flows. |
+| `backend/reports/` | Generated report JSON outputs. |
+| [backend/utils/smoothing.py](backend/utils/smoothing.py) | Confidence smoothing helpers. |
+| [backend/utils/video_utils.py](backend/utils/video_utils.py) | Video utility functions used by pipelines. |
+
+### Migrations (Alembic)
+
+| File | Purpose |
+|---|---|
+| [alembic/env.py](alembic/env.py) | Alembic runtime environment setup for offline/online migration execution. |
+| [alembic/versions/20260215_01_create_incidents.py](alembic/versions/20260215_01_create_incidents.py) | Base incidents table migration (idempotent-safe). |
+| [alembic/versions/20260301_02_add_incident_indexes.py](alembic/versions/20260301_02_add_incident_indexes.py) | Adds production query indexes on incidents table. |
+| [alembic/versions/20260301_03_add_incident_status_constraint.py](alembic/versions/20260301_03_add_incident_status_constraint.py) | Adds status check constraint for production DBs (non-SQLite). |
+
+### Frontend Main Runtime Files
+
+| File | Purpose |
+|---|---|
+| [frontend/package.json](frontend/package.json) | Frontend scripts/dependencies (`dev`, `build`, `lint`). |
+| [frontend/vite.config.ts](frontend/vite.config.ts) | Vite bundler config. |
+| [frontend/src/main.tsx](frontend/src/main.tsx) | React app bootstrap (mount point + global CSS). |
+| [frontend/src/App.tsx](frontend/src/App.tsx) | Router root (`/` landing page, `/app` main authenticated app shell). |
+| [frontend/src/components/ModernSecurityLayout.tsx](frontend/src/components/ModernSecurityLayout.tsx) | Main application shell/nav + role-based view switching + live hooks integration. |
+| [frontend/src/hooks/useLiveStatus.ts](frontend/src/hooks/useLiveStatus.ts) | Polls `/api/live-status` and controls offline mode API state. |
+| [frontend/src/hooks/useRealtimeIncidents.tsx](frontend/src/hooks/useRealtimeIncidents.tsx) | Incident feed + websocket updates + incident actions. |
+| [frontend/src/hooks/useIncidentWebSocket.ts](frontend/src/hooks/useIncidentWebSocket.ts) | Websocket hook for incident/camera stream events. |
+| [frontend/src/utils/exportUtils.ts](frontend/src/utils/exportUtils.ts) | CSV/PDF/export helpers used by reporting UI flows. |
+| [frontend/src/components/DVRCameraGrid.tsx](frontend/src/components/DVRCameraGrid.tsx) | Live camera grid view rendered in core dashboard. |
+| [frontend/src/components/IncidentsView.tsx](frontend/src/components/IncidentsView.tsx) | Incident management UI. |
+| [frontend/src/components/DispatchesView.tsx](frontend/src/components/DispatchesView.tsx) | Dispatch workflow UI for officers/security. |
+| [frontend/src/components/SystemHealthView.tsx](frontend/src/components/SystemHealthView.tsx) | System status and model health dashboard UI. |
+| [frontend/src/components/AIModelManagement.tsx](frontend/src/components/AIModelManagement.tsx) | AI model management panel UI. |
+| [frontend/src/components/AIFeedbackSection.tsx](frontend/src/components/AIFeedbackSection.tsx) | Feedback/retrain operations UI integration. |
+| [frontend/src/components/landing/LandingPage.tsx](frontend/src/components/landing/LandingPage.tsx) | Public landing page. |
+
+Notes:
+- `frontend/src/components/ui/*` and `frontend/src/components/landing/ui/*` are reusable UI primitives.
+- `frontend/src/components/*` contains role views, dashboards, and modals.
+- `frontend/src/data/*` contains static sample data used by specific panels.
+
+### Tests
+
+| File | Purpose |
+|---|---|
+| [tests/test_health.py](tests/test_health.py) | Backend health endpoint test. |
+| [tests/test_incidents.py](tests/test_incidents.py) | Incident storage behavior tests (CRUD/status/edge cases). |
+| [tests/test_db_schema.py](tests/test_db_schema.py) | Ensures incident indexes exist. |
+| [tests/test_db_engine.py](tests/test_db_engine.py) | Engine/session URL normalization and binding consistency tests. |
+
+## Run Quality Checks
+
+Backend tests:
+```powershell
+.\.venv\Scripts\python.exe -m pytest -q
 ```
 
----
-
-## 📂 Project Structure
-
+Migration state:
+```powershell
+.\.venv\Scripts\python.exe -m alembic upgrade head
+.\.venv\Scripts\python.exe -m alembic current
 ```
-├── backend/                  # Flask API & AI Logic
-│   ├── app.py                # Main entry point
-│   ├── ai/                   # Inference scripts (inference.py, etc.)
-│   ├── services/             # Simulator, Incident Management
-│   └── config.py             # System constants
-├── Vigil Surveillance.../    # React/Vite Frontend
-│   ├── src/                  # React components
-│   └── package.json          # Frontend dependencies
-├── start-vigil.ps1           # Verified startup script
-└── requirements.txt          # Python dependencies
+
+Frontend quality:
+```powershell
+cd frontend
+npm run lint
+npm run build
 ```
+
+## Current Known Production Gaps
+
+- Auth is still demo-level (hardcoded users/plain password flow). You can disable the demo endpoints via `DEMO_AUTH_ENABLED=0` and replace with a real auth system.
+- Retraining endpoint currently simulates training; wire it to a real training pipeline before production.
+- Flask builtin server is for development; use gunicorn/uvicorn with proper reverse proxy in production.

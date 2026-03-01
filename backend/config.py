@@ -10,8 +10,8 @@ PEOPLE_COUNT_CAMERAS = VIOLENCE_CAMERAS  # Or specify a different list if needed
 # Global configuration for thresholds and model paths
 
 # Externalized thresholds for tunability
-# HIGH ACCURACY MODE: Only trigger on very confident detections
-VIOLENCE_THRESHOLD = 0.70  # Higher confidence to reduce false positives
+# Aligned with the V6 export profile in backend/models/violence_detector_v6_config.json
+VIOLENCE_THRESHOLD = 0.315
 ACCIDENT_THRESHOLD = 0.30  # Increased sensitivity for more crash detections
 SMOOTHING_WINDOW = 5
 
@@ -27,14 +27,16 @@ DEFAULT_CAMERAS = [
 
 
 # Model identification
-MODEL_NAME = "Vigil-MobileNetClip-v1"
+MODEL_NAME = "Vigil-Violence-V6-TorchScript"
 
 
 MODEL_PATHS = {
-    "mobilenet_clip": "backend/models/mobilenet_clip_best_ts.pt",  # Violence
-    "crash_lstm": "backend/models/mobilenetv2_lstm_finetuned.pt",  # Crash
-    "people_counter": "backend/models/yolov8n.pt",                 # People counting
-    "x3d_s": "backend/models/x3d_s_best.pth",
+    "violence_ts": "backend/models/violence_detector_v6_ts.pt",
+    "violence_config": "backend/models/violence_detector_v6_config.json",
+    "crash_lstm": "backend/ai/crash_detector/mobilenetv2_lstm_finetuned.pt",
+    "people_counter": "backend/models/yolov8n.pt",
+    # Backward-compatible alias for older callers.
+    "mobilenet_clip": "backend/models/violence_detector_v6_ts.pt",
 }
 
 DATA_PATHS = {

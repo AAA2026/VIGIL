@@ -1,0 +1,106 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: Vigil_postgres
+    restart: always
+    environment:
+      POSTGRES_USER: vigil
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-vigil}
+      POSTGRES_DB: vigil
+    ports:
+      - "5432:5432"
+    volumes:
+      - vigil_pgdata:/var/lib/postgresql/data
+    networks:
+      - vigil-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vigil"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      args:
+        ENVIRONMENT: production
+    container_name: Vigil
+    restart: always
+    ports:
+      - "5000:5000"
+    environment:
+      DATABASE_URL: postgresql+psycopg://vigil:${DB_PASSWORD:-vigil}@postgres:5432/vigil
+      FLASK_ENV: production
+      DB_ECHO: 0
+      # Connection pooling (production optimization)
+      DB_POOL_SIZE: ${DB_POOL_SIZE:-20}
+      DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-10}
+      DB_POOL_RECYCLE: 3600
+      DB_POOL_PRE_PING: 1
+      # Data retention & archival
+      INCIDENT_RETENTION_DAYS: ${INCIDENT_RETENTION_DAYS:-30}
+      INCIDENT_ARCHIVE_PATH: ${INCIDENT_ARCHIVE_PATH:-/data/archives}
+      ENABLE_AUTO_ARCHIVAL: ${ENABLE_AUTO_ARCHIVAL:-1}
+      # Auth
+      JWT_SECRET: ${JWT_SECRET:-change-me}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - vigil-network
+    volumes:
+      - ./data/videos:/app/data/videos:ro
+      - ./data/archives:/data/archives
+
+  frontend:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_URL: http://backend:5000
+    container_name: Vigil_frontend
+    restart: always
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    networks:
+      - vigil-network
+    environment:
+      NODE_ENV: production
+
+  # PostgreSQL backup service (daily dumps with 30-day retention)
+  postgres-backup:
+    image: postgres:16-alpine
+    container_name: Vigil_postgres_backup
+    restart: always
+    environment:
+      PGPASSWORD: ${DB_PASSWORD:-vigil}
+    volumes:
+      - ./backups:/backups
+      - /etc/localtime:/etc/localtime:ro
+    networks:
+      - vigil-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: |
+      bash -c 'while true; do
+        echo "[$(date)] Starting backup...";
+        pg_dump -h postgres -U vigil vigil 2>/dev/null | gzip > /backups/vigil-$(date +%Y%m%d-%H%M%S).sql.gz;
+        echo "[$(date)] Backup complete. Cleaning old backups...";
+        find /backups -name "vigil-*.sql.gz" -mtime +30 -exec rm {} \;
+        echo "[$(date)] Waiting 24 hours until next backup...";
+        sleep 86400;
+      done'
+
+volumes:
+  vigil_pgdata:
+    driver: local
+
+networks:
+  vigil-network:
+    driver: bridge

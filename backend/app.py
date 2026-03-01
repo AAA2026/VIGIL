@@ -1,4 +1,4 @@
-
+﻿
 import os
 import io
 import csv
@@ -6,9 +6,11 @@ import json
 import uuid
 import tempfile
 import threading
+import logging
+import time
 from datetime import datetime
 from pathlib import Path
-from flask import Flask, request, jsonify, send_from_directory
+from flask import Flask, request, jsonify, send_from_directory, Response
 from flask_cors import CORS
 from flask_socketio import SocketIO, emit
 try:
@@ -16,16 +18,107 @@ try:
 except ImportError:
     pdfkit = None
 
+# Logging
+logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s: %(message)s")
+logger = logging.getLogger(__name__)
+
+# Metrics
+from prometheus_client import Counter, Summary, generate_latest, CONTENT_TYPE_LATEST
+
+REQUEST_COUNT = Counter(
+    "http_requests_total", "Total HTTP requests", ["method", "path", "status"]
+)
+REQUEST_LATENCY = Summary(
+    "http_request_duration_seconds", "HTTP request latency in seconds", ["path"]
+)
+
+def _parse_cors_origins() -> list[str] | str:
+    raw = os.getenv(
+        "CORS_ALLOWED_ORIGINS",
+        "http://localhost:3000,http://127.0.0.1:3000",
+    ).strip()
+    if raw == "*":
+        return "*"
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+def _demo_auth_enabled() -> bool:
+    return os.getenv("DEMO_AUTH_ENABLED", "1").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _int_env(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw.strip())
+    except (TypeError, ValueError):
+        return default
+
+
+ALLOWED_ORIGINS = _parse_cors_origins()
+DEMO_AUTH_ENABLED = _demo_auth_enabled()
+
 # --- Flask App and In-Memory Stores ---
 app = Flask(__name__)
-CORS(app)
+app.config["MAX_CONTENT_LENGTH"] = _int_env("MAX_UPLOAD_MB", 200) * 1024 * 1024
+
+CORS(app, resources={r"/*": {"origins": ALLOWED_ORIGINS}})
 # Force threading mode for Windows stability / dev server compatibility
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
+socketio = SocketIO(app, cors_allowed_origins=ALLOWED_ORIGINS, async_mode="threading")
+
+
+@app.before_request
+def _start_timer():
+    request._start_time = time.time()
+
+
+@app.after_request
+def _after(response):
+    try:
+        elapsed = time.time() - getattr(request, "_start_time", time.time())
+        REQUEST_LATENCY.labels(request.path).observe(elapsed)
+        REQUEST_COUNT.labels(request.method, request.path, response.status_code).inc()
+    except Exception:
+        pass
+    # Minimal secure-by-default headers.
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    return response
 PROJECT_ROOT = Path(__file__).parent.parent
 VIDEO_DIR = PROJECT_ROOT / 'Videos'
+FAST_BOOT = os.getenv("FAST_BOOT", "0") == "1" or os.getenv("UNIT_TEST", "0") == "1"
+DISABLE_SIMULATOR = os.getenv("DISABLE_SIMULATOR", "0") == "1" or FAST_BOOT
+
+# Database setup
+from backend.db import Base, get_engine, get_session
+ENGINE = get_engine()
+DB_AUTO_CREATE = os.getenv("DB_AUTO_CREATE", "0") == "1" or FAST_BOOT
+if DB_AUTO_CREATE:
+    Base.metadata.create_all(ENGINE)
 
 # Root route serving removed to prevent conflicts
 # All videos are served via /videos/<path:filename> defined below
+
+@app.route("/api/health", methods=["GET"])
+def api_health():
+    ok = True
+    db_ok = True
+    try:
+        Session = get_session()
+        with Session() as session:
+            from sqlalchemy import text
+            session.execute(text("SELECT 1"))
+    except Exception as e:
+        db_ok = False
+        logger.warning(f"[HEALTH] DB check failed: {e}")
+    return jsonify({"ok": ok and db_ok, "db": db_ok}), 200 if db_ok else 503
+
+
+@app.route("/metrics")
+def metrics():
+    return Response(generate_latest(), mimetype=CONTENT_TYPE_LATEST)
 
 if not hasattr(app, 'users'):
     app.users = {
@@ -52,41 +145,51 @@ def retrain_model(training_data_path=None):
 
 
 # --- Camera Simulator and State ---
-try:
+if not FAST_BOOT:
+    try:
+        from backend.config import DEFAULT_CAMERAS, VIOLENCE_THRESHOLD, ACCIDENT_THRESHOLD
+        from backend.services.camera_simulator import CameraSimulator
+        from backend.services.camera_manager import camera_states, get_all_camera_states, get_offline_mode_state, set_offline_mode_state
+        from backend.services.incident_storage import add_incident, get_incidents, get_incident_by_id, mark_incident_resolved, acknowledge_incident, dispatch_incident, list_security_roster, clear_incidents, get_incident_stats, ack_all_incidents
+        from backend.services.incident_service import process_video
+        from backend.ai.inference import run_inference
+    except ImportError:
+        from config import DEFAULT_CAMERAS, VIOLENCE_THRESHOLD, ACCIDENT_THRESHOLD
+        from services.camera_simulator import CameraSimulator
+        from services.camera_manager import camera_states, get_all_camera_states, get_offline_mode_state, set_offline_mode_state
+        from services.incident_storage import add_incident, get_incidents, get_incident_by_id, mark_incident_resolved, acknowledge_incident, dispatch_incident, list_security_roster, clear_incidents, get_incident_stats, ack_all_incidents
+        from services.incident_service import process_video
+        from ai.inference import run_inference
+else:
+    # Fast boot/testing: avoid heavy model loads
     from backend.config import DEFAULT_CAMERAS, VIOLENCE_THRESHOLD, ACCIDENT_THRESHOLD
-    from backend.services.camera_simulator import CameraSimulator
-    from backend.services.camera_manager import camera_states, get_offline_mode_state, set_offline_mode_state
-    from backend.services.incident_storage import add_incident, get_incidents
-    from backend.ai.inference import run_inference
-except ImportError:
-    from config import DEFAULT_CAMERAS, VIOLENCE_THRESHOLD, ACCIDENT_THRESHOLD
-    from services.camera_simulator import CameraSimulator
-    from services.camera_manager import camera_states, get_offline_mode_state, set_offline_mode_state
-    from services.incident_storage import add_incident, get_incidents, get_incident_by_id, mark_incident_resolved, acknowledge_incident, dispatch_incident, list_security_roster, clear_incidents, get_incident_stats, ack_all_incidents
-    from ai.inference import run_inference
-import time
+    from backend.services.camera_manager import camera_states, get_all_camera_states, get_offline_mode_state, set_offline_mode_state
+    from backend.services.incident_storage import add_incident, get_incidents, get_incident_by_id, mark_incident_resolved, acknowledge_incident, dispatch_incident, list_security_roster, clear_incidents, get_incident_stats, ack_all_incidents
+
+    def run_inference(*args, **kwargs):
+        return {"event": "none", "confidence": 0.0, "model": "mock", "latency_ms": 1, "timestamp": time.time()}
+    def process_video(camera_id: str, video_path: str, **kwargs):
+        return run_inference(video_path, camera_id=camera_id)
+    CameraSimulator = None  # type: ignore
 
 # Start camera simulator on app startup
 simulator = None
 def start_simulator():
+    if DISABLE_SIMULATOR:
+        logger.info("[SIM] Simulator disabled by DISABLE_SIMULATOR env")
+        return
+    if CameraSimulator is None:
+        logger.info("[SIM] Simulator skipped (CameraSimulator unavailable in FAST_BOOT)")
+        return
     global simulator
     if simulator is None:
         simulator = CameraSimulator(camera_ids=DEFAULT_CAMERAS, video_dir=VIDEO_DIR, rotation_interval=5, violence_probability=0.15)
         simulator.start()
-        print("[DEBUG] CameraSimulator started.")
-        # Link simulator state to global camera_states
-        def sync_states():
-            while True:
-                for cid, state in simulator.camera_states.items():
-                    camera_states.set(cid, state)
-                # [DEBUG] Print current camera_states
-                # print(f"[DEBUG] camera_states: {camera_states.all()}")
-                time.sleep(1)
-        threading.Thread(target=sync_states, daemon=True).start()
+        logger.info("[SIM] CameraSimulator started.")
 
     # Force initial camera states if empty (guarantee frontend always gets cameras)
     if not camera_states.all():
-        print("[DEBUG] Forcing initial camera states...")
+        logger.info("[SIM] Forcing initial camera states...")
         video_root = Path(__file__).parent.parent / "Videos"
         video_files = []
         for subfolder in video_root.iterdir():
@@ -104,7 +207,7 @@ def start_simulator():
                 "confidence": 0.0,
                 "last_update": None
             })
-        print("[DEBUG] Initial camera states set.")
+        logger.info("[SIM] Initial camera states set.")
 
 start_simulator()
 
@@ -136,8 +239,10 @@ def live_status():
 
 @app.route('/auth/login', methods=['POST'])
 def auth_login():
+    if not DEMO_AUTH_ENABLED:
+        return jsonify({"error": "Demo auth endpoints are disabled"}), 503
     # Simple demo login (replace with real auth as needed)
-    data = request.get_json()
+    data = request.get_json(silent=True) or {}
     email = data.get('email', '').lower()
     password = data.get('password', '')
     role = data.get('role', '')
@@ -151,7 +256,9 @@ def auth_login():
 # --- User Registration Endpoint ---
 @app.route('/auth/register', methods=['POST'])
 def auth_register():
-    data = request.get_json()
+    if not DEMO_AUTH_ENABLED:
+        return jsonify({"error": "Demo auth endpoints are disabled"}), 503
+    data = request.get_json(silent=True) or {}
     email = data.get('email', '').lower()
     password = data.get('password', '')
     role = data.get('role', 'officer')
@@ -167,7 +274,9 @@ def auth_register():
 # --- Password Reset Endpoint (Demo) ---
 @app.route('/auth/reset-password', methods=['POST'])
 def auth_reset_password():
-    data = request.get_json()
+    if not DEMO_AUTH_ENABLED:
+        return jsonify({"error": "Demo auth endpoints are disabled"}), 503
+    data = request.get_json(silent=True) or {}
     email = data.get('email', '').lower()
     new_password = data.get('new_password', '')
     if not email or not new_password:
@@ -181,7 +290,9 @@ def auth_reset_password():
 # --- User Role Management Endpoint (Demo) ---
 @app.route('/auth/set-role', methods=['POST'])
 def auth_set_role():
-    data = request.get_json()
+    if not DEMO_AUTH_ENABLED:
+        return jsonify({"error": "Demo auth endpoints are disabled"}), 503
+    data = request.get_json(silent=True) or {}
     email = data.get('email', '').lower()
     new_role = data.get('role', '')
     if not email or not new_role:
@@ -231,7 +342,8 @@ def simulator_stats():
     Returns camera simulator statistics.
     Useful for monitoring the live demo system.
     """
-    simulator = get_simulator()
+    if simulator is None:
+        return jsonify({"running": False, "message": "simulator not initialized"}), 200
     return jsonify(simulator.get_stats())
 
 # Offline mode endpoints (toggle AI incident creation)
@@ -258,8 +370,8 @@ def toggle_offline_mode():
     
     set_offline_mode_state(new_state)
     
-    status_msg = "🔴 OFFLINE: AI incident detection PAUSED" if new_state else "🟢 ONLINE: AI incident detection ACTIVE"
-    print(status_msg)
+    status_msg = "OFFLINE: AI incident detection PAUSED" if new_state else "ONLINE: AI incident detection ACTIVE"
+    logger.info(status_msg)
     
     return jsonify({
         "success": True,
@@ -285,7 +397,7 @@ def process_batch():
 # Process custom video
 @app.route("/api/process-video", methods=["POST"])
 def process_custom_video():
-    data = request.get_json()
+    data = request.get_json(silent=True) or {}
     video_path = data.get("video_path", "demo.mp4")
     camera_id = data.get("camera_id", "CAM-01")
     
@@ -479,7 +591,6 @@ def api_ack_all_incidents():
         user_id = data.get("user_id", "unknown")
         count = ack_all_incidents(user_id)
         # Also reset simulator cache so videos can be re-detected
-        simulator = get_simulator()
         if simulator:
             simulator.clear_all_processed_videos()
         
@@ -519,7 +630,6 @@ def api_clear_incidents():
     """Clear all stored incidents."""
     clear_incidents()
     # Also reset simulator cache so videos can be re-detected
-    simulator = get_simulator()
     if simulator:
         simulator.clear_all_processed_videos()
     
@@ -789,7 +899,7 @@ def global_search():
                 "id": incident.get("id", ""),
                 "type": "incident",
                 "title": incident.get("type", "Unknown Incident"),
-                "subtitle": f"{incident.get('location', 'Unknown')} • {incident.get('camera', 'Unknown')}",
+                "subtitle": f"{incident.get('location', 'Unknown')} | {incident.get('camera', 'Unknown')}",
                 "timestamp": incident.get("timestamp", ""),
                 "severity": incident.get("severity", "")
             })
@@ -814,7 +924,7 @@ def global_search():
                                 "id": report.get("id", ""),
                                 "type": "report",
                                 "title": report.get("name", "Unknown Report"),
-                                "subtitle": f"{report.get('type', 'Unknown').title()} Report • Generated by {report.get('generated_by', 'Unknown')}",
+                                "subtitle": f"{report.get('type', 'Unknown').title()} Report | Generated by {report.get('generated_by', 'Unknown')}",
                                 "timestamp": report.get("generated_at", "")
                             })
                         except:
@@ -834,7 +944,7 @@ def global_search():
                 "id": cam_id,
                 "type": "camera",
                 "title": cam_id,
-                "subtitle": f"Status: {camera.get('event', 'normal').title()} • {camera.get('last_update', '')}",
+                "subtitle": f"Status: {camera.get('event', 'normal').title()} | {camera.get('last_update', '')}",
                 "status": camera.get("event", "normal")
             })
 
@@ -867,11 +977,15 @@ def emit_camera_update(camera_state):
 # (In production, call emit_incident_update and emit_camera_update in the relevant service logic)
 
 if __name__ == "__main__":
-    print("🚀 Starting VIGIL Backend on http://127.0.0.1:5000")
-    print("📹 Loading video dataset...")
-    print("🎥 Initializing cameras...")
-    print("🎬 Starting live camera simulator...")
+    print("Starting VIGIL Backend on http://127.0.0.1:5000")
+    print("Loading video dataset...")
+    print("Initializing cameras...")
+    print("Starting live camera simulator...")
     start_simulator()
-    print("✅ System ready - cameras are now 'live'")
-    socketio.run(app, host="0.0.0.0", port=5000, debug=True, use_reloader=True)
+    print("System ready - cameras are now live")
+    import sys, os
+    print(f"[BOOT] sys.executable={sys.executable}")
+    print(f"[BOOT] WERKZEUG_RUN_MAIN={os.getenv('WERKZEUG_RUN_MAIN')}")
+    print(f"[BOOT] app.debug={app.debug}")
+    socketio.run(app, host="0.0.0.0", port=5000, debug=False, use_reloader=False)
 

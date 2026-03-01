@@ -1,5 +1,4 @@
-
-import os
+﻿import os
 import time
 import json
 import logging
@@ -12,7 +11,8 @@ logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 DATASET_DIR = PROJECT_ROOT / "backend" / "data" / "dataset"
-MODELS_DIR = PROJECT_ROOT / "MODELS"
+MODELS_DIR = PROJECT_ROOT / "backend" / "models" / "retrained"
+
 
 def retrain_pipeline():
     """
@@ -21,61 +21,60 @@ def retrain_pipeline():
     2. Fine-tune the model (simulated).
     3. Export new model version.
     """
-    logger.info("🚀 Starting Model Retraining Pipeline...")
-    
-    # 1. Data Loading
+    logger.info("Starting model retraining pipeline...")
+    MODELS_DIR.mkdir(parents=True, exist_ok=True)
+
     verified_crashes = list((DATASET_DIR / "verified_crash").glob("*.mp4"))
     false_alarms = list((DATASET_DIR / "false_alarm").glob("*.mp4"))
-    
     total_samples = len(verified_crashes) + len(false_alarms)
-    
-    logger.info(f"📂 Dataset Loaded: {len(verified_crashes)} Verified Crashes, {len(false_alarms)} False Alarms")
-    
+
+    logger.info(
+        "Dataset loaded: %s verified crashes, %s false alarms",
+        len(verified_crashes),
+        len(false_alarms),
+    )
+
     if total_samples == 0:
-        logger.warning("⚠️ No new training data found. Skipping retraining.")
+        logger.warning("No new training data found. Skipping retraining.")
         return {
-            "status": "skipped", 
-            "message": "No new training data."
+            "status": "skipped",
+            "message": "No new training data.",
         }
-        
-    logger.info("🧠 Loading Base Model: MobileNetV2-LSTM (v1.0)...")
-    time.sleep(2) # Simulate load
-    
-    # 2. Training Loop (Simulated)
+
+    logger.info("Loading base model: MobileNetV2-LSTM (v1.0)...")
+    time.sleep(2)
+
     epochs = 5
-    logger.info(f"🔄 Starting Fine-Tuning for {epochs} Epochs...")
-    
+    logger.info("Starting fine-tuning for %s epochs...", epochs)
+
     for epoch in range(1, epochs + 1):
-        # Simulate loss reduction
-        loss = 0.8 * (0.6 ** epoch) 
+        loss = 0.8 * (0.6 ** epoch)
         accuracy = 85 + (epoch * 2.5)
-        logger.info(f"   Epoch {epoch}/{epochs} - Loss: {loss:.4f} - Val Accuracy: {accuracy:.1f}%")
-        time.sleep(1.5) # Simulate training time per epoch
-        
-    # 3. Model Evaluation
+        logger.info("   Epoch %s/%s - Loss: %.4f - Val Accuracy: %.1f%%", epoch, epochs, loss, accuracy)
+        time.sleep(1.5)
+
     final_acc = 98.2
-    logger.info(f"✅ Training Complete. Final Validation Accuracy: {final_acc}% (+1.2% improvement)")
-    
-    # 4. Save Model
+    logger.info("Training complete. Final validation accuracy: %s%% (+1.2%% improvement)", final_acc)
+
     timestamp = datetime.now().strftime("%Y%m%d_%H%M")
     new_model_name = f"crash_detection_v{timestamp}.pt"
     save_path = MODELS_DIR / new_model_name
-    
-    logger.info(f"💾 Saving quantized model to {save_path}...")
+
+    logger.info("Saving quantized model to %s...", save_path)
     time.sleep(1)
-    
-    # Create valid dummy file
-    with open(save_path, "w") as f:
+
+    with open(save_path, "w", encoding="utf-8") as f:
         f.write("DUMMY MODEL CONTENT")
-        
-    logger.info("✨ Retraining Pipeline Completed Successfully.")
-    
+
+    logger.info("Retraining pipeline completed successfully.")
+
     return {
         "status": "success",
         "new_model": new_model_name,
         "accuracy": final_acc,
-        "samples_used": total_samples
+        "samples_used": total_samples,
     }
+
 
 if __name__ == "__main__":
     retrain_pipeline()

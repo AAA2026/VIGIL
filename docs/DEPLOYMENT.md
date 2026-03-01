@@ -42,11 +42,12 @@ pip install -r requirements.txt
 *Note: If you have a GPU (NVIDIA), ensure you install the CUDA-supported version of PyTorch separately if `requirements.txt` installs the CPU version by default. Visit [pytorch.org](https://pytorch.org/) for specific commands.*
 
 ### 1.4. Configure Environment
-The backend uses in-memory storage for incidents and JSON files for reports by default, so **no external database (SQL/Mongo) is required** for the initial setup.
+The backend now persists incidents to a database. Set `DATABASE_URL` (PostgreSQL recommended). If unset, it falls back to a local SQLite file for development.
 
 **Key Configuration Files:**
 *   `backend/config.py`: Contains camera definitions, model path settings, and sensitivity thresholds.
-*   `backend/app.py`: Main entry point.
+*   `backend/app.py`: Main entry point and health check.
+*   `backend/db/`: SQLAlchemy models/engine; migrations via Alembic (`alembic upgrade head`).
 
 ### 1.5. Prepare Video Data (CRITICAL)
 The system simulates camera feeds using video files processed by specific AI models based on their folder location. 
@@ -86,7 +87,7 @@ The frontend is a modern React application built with Vite.
 
 ### 2.1. Navigate to Frontend
 ```bash
-cd "Vigil Surveillance App Design - Figma"
+cd "frontend"
 ```
 
 ### 2.2. Install Dependencies

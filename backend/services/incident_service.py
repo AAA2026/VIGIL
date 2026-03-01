@@ -22,7 +22,7 @@ def process_video(
     Args:
         camera_id: Camera identifier
         video_path: Path to video file
-        model_name: ML model to use ("mobilenet" or "x3d")
+        model_name: Legacy argument kept for backward compatibility
         update_state: Whether to update camera_service state (default True)
         enable_crash: Override to force crash detection (for mixed cameras)
         crash_threshold: Minimum confidence to treat crash as an incident
@@ -45,9 +45,12 @@ def process_video(
     crash_result = None
     
     # Run detection based on camera type AND video type
+    # model_name is kept for backward compatibility with callers, but model
+    # selection is now handled by backend.ai.inference via camera_id routing.
+    _ = model_name
     if is_violence_camera:
         # Violence camera: always run violence detection only
-        violence_result = run_inference(video_path, model_name=model_name)
+        violence_result = run_inference(video_path, camera_id=camera_id)
     elif is_crash_camera:
         # Crash camera: always run crash detection only
         try:
@@ -60,7 +63,7 @@ def process_video(
         # Mixed camera: run detector based on video type
         if is_violence_video or is_no_violence_video:
             # Violence-type video: only run violence detection
-            violence_result = run_inference(video_path, model_name=model_name)
+            violence_result = run_inference(video_path, camera_id=camera_id)
         elif is_crash_video or is_no_crash_video:
             # Crash-type video: only run crash detection
             try:
@@ -69,7 +72,7 @@ def process_video(
                 crash_result = {"is_crash": False, "confidence": 0.0, "error": str(e)}
         else:
             # Unknown video type: run both detectors
-            violence_result = run_inference(video_path, model_name=model_name)
+            violence_result = run_inference(video_path, camera_id=camera_id)
             try:
                 crash_result = detect_crash(video_path)
             except Exception as e:
